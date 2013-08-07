@@ -1,0 +1,110 @@
+#!/usr/bin/python
+
+import os, json, sys, requests, Queue, string, time, threading
+
+"""
+    Lines read from data file are batched and these batches are put in a Queue.
+    Each batch is processed by one thread from a pool.    
+"""
+
+g_fileName = "myrequestdata.csv" 
+
+g_num_concurrent_threads = 10
+g_batchSize = 3
+g_separator = ","
+g_uriBase = "http://hostname:8080/MyService/resourceName"
+g_data_headers = ["customerId", "deptName"]
+g_verb = "PUT"
+
+
+g_logQ = Queue.Queue()
+g_taskQ = Queue.Queue()
+
+
+
+def log(msg):
+    global g_logQ
+    g_logQ.put(msg)
+
+
+def print_log():
+    global g_logQ
+    while True:
+        print g_logQ.get(True)
+        
+    
+def start_log_writer_daemon():    
+        t = threading.Thread(target=print_log)
+        t.daemon = True
+        t.start()
+
+
+def worker_thread():
+    global g_taskQ
+    while True:
+        batch = g_taskQ.get(True)
+        execute_request(batch)
+        g_taskQ.task_done()
+
+
+def execute_request(batch):
+    global g_separator, g_data_headers, g_uriBase, g_verb
+    for line in batch:
+        row = [x.strip() for x in line.split(g_separator)]
+        rowElementCount = 0
+        payLoad = {}
+        for rowElement in row:
+            payLoad[ g_data_headers[rowElementCount] ] = rowElement
+            rowElementCount = rowElementCount + 1
+        if   g_verb == "PUT":
+            r = requests.put(g_uriBase, params=payLoad)
+        elif g_verb == "POST":        
+            r = requests.post(g_uriBase, params=payLoad)        
+        elif g_verb == "GET":                
+            r = requests.get(g_uriBase, params=payLoad)        
+        print "executed ", r.url, " status ", r.status_code
+
+
+def start_daemons():
+    global g_num_concurrent_threads
+    for i in range(0, g_num_concurrent_threads):
+        t = threading.Thread(target=worker_thread)
+        t.daemon = True
+        t.start()
+
+
+def main():
+
+    global g_fileName, g_batchSize, g_taskQ
+
+    start_log_writer_daemon()
+    
+    start_daemons()
+    threading.enumerate()
+
+    absFilePath = g_fileName
+    batchOfRows = []
+    rowsBatched = 0
+        
+    with open(absFilePath, 'r') as f:
+        for line in f:
+            if len(line.strip()) > 0:
+                batchOfRows.append(line.strip())
+                rowsBatched = rowsBatched + 1
+                if rowsBatched == g_batchSize:
+                    g_taskQ.put(list(batchOfRows)) # clone the list before putting it in queue!
+                    rowsBatched = 0
+                    del batchOfRows[:]
+
+    if batchOfRows:
+        g_taskQ.put(batchOfRows)
+    
+    g_taskQ.join()
+                
+    # cleanup
+    f.closed
+
+
+    
+if __name__ == '__main__':
+    main()
